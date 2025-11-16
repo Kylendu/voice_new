@@ -3,12 +3,14 @@ import numpy as np
 import joblib
 import tempfile
 import pandas as pd
+import os
 from utils.feature_extraction import extract_features
 from st_audiorec import st_audiorec
 import librosa
 import speech_recognition as sr
+from pydub import AudioSegment  # <== Untuk konversi m4a → wav
 
-# ========== KONFIGURASI HALAMAN ==========
+# ================= KONFIGURASI HALAMAN =================
 st.set_page_config(
     page_title="🎧 Voice Identification System",
     page_icon="🎙️",
@@ -16,7 +18,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ======== SIDEBAR ========
+# ================= SIDEBAR =================
 st.sidebar.title("⚙️ Pengaturan & Informasi")
 st.sidebar.info(
     """
@@ -28,19 +30,7 @@ st.sidebar.info(
 st.sidebar.markdown("---")
 st.sidebar.caption("Dibuat dengan 💙 menggunakan Streamlit + RandomForest + SpeechRecognition")
 
-# ======== HEADER UTAMA ========
-st.markdown(
-    """
-    <div style="text-align:center;">
-        <h1>🎙️ Voice Identification System</h1>
-        <p>Sistem ini mendeteksi <b>pengguna</b> dan <b>status suara</b> (buka/tutup)
-        menggunakan model <b>Random Forest</b> dan analisis fitur MFCC.</p>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-# ======== LOAD MODEL ========
+# ================= LOAD MODEL =================
 try:
     model_user = joblib.load("models/user_model.pkl")
     model_status = joblib.load("models/status_model.pkl")
@@ -50,15 +40,19 @@ except Exception as e:
     st.sidebar.error(f"❌ Gagal memuat model: {e}")
     st.stop()
 
-# ======== PILIH INPUT ========
-st.markdown("### 🎧 Pilih Metode Input")
-input_option = st.radio(
-    "",
-    ["🎤 Rekam suara langsung", "📁 Upload file (.wav)"],
-    horizontal=True
-)
+# ================= FUNGSI KONVERSI =================
+def convert_m4a_to_wav(input_file):
+    """Konversi file .m4a ke .wav dan kembalikan path output"""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav:
+            audio = AudioSegment.from_file(input_file, format="m4a")
+            audio.export(tmp_wav.name, format="wav")
+            return tmp_wav.name
+    except Exception as e:
+        st.error(f"Gagal mengonversi file M4A: {e}")
+        return None
 
-# ======== PROSES AUDIO ========
+# ================= FUNGSI PROSES AUDIO =================
 def process_audio(audio_path):
     features = extract_features(audio_path)
     if not features:
@@ -86,7 +80,15 @@ def process_audio(audio_path):
     user_conf = np.max(user_pred_proba)
     status_conf = np.max(status_pred_proba)
 
-    user_label = f"user{user_pred + 1}"
+    if user_pred == 0:
+        user_label = "user1"
+    elif user_pred == 1:
+        user_label = "user2"
+    elif user_pred == 2:
+        user_label = "anomali"
+    else:
+        user_label = "error user"
+    # user_label = f"user{user_pred + 1}"
     status_label = "buka" if status_pred == 0 else "tutup"
 
     # ===== SPEECH TO TEXT =====
@@ -119,11 +121,17 @@ def process_audio(audio_path):
     else:
         st.warning(f"🔒 Teridentifikasi: **{user_label} sedang menutup** sesuatu.")
 
-    # ===== Fitur yang diekstraksi =====
     with st.expander("📈 Detail Fitur yang Diekstraksi"):
         st.dataframe(feature_df.T, use_container_width=True)
 
-# ======== INPUT OPSI ========
+# ================= INPUT OPSI =================
+st.markdown("### 🎧 Pilih Metode Input")
+input_option = st.radio(
+    "",
+    ["🎤 Rekam suara langsung", "📁 Upload file (.wav / .m4a)"],
+    horizontal=True
+)
+
 if input_option == "🎤 Rekam suara langsung":
     st.write("Klik tombol di bawah untuk mulai merekam suara:")
     audio_bytes = st_audiorec()
@@ -135,12 +143,23 @@ if input_option == "🎤 Rekam suara langsung":
         st.info("🎧 Suara berhasil direkam, memproses...")
         process_audio(audio_path)
 
-elif input_option == "📁 Upload file (.wav)":
-    uploaded_file = st.file_uploader("Unggah file suara Anda:", type=["wav"])
+elif input_option == "📁 Upload file (.wav / .m4a)":
+    uploaded_file = st.file_uploader("Unggah file suara Anda:", type=["wav", "m4a"])
     if uploaded_file:
-        st.audio(uploaded_file, format="audio/wav")
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+        suffix = os.path.splitext(uploaded_file.name)[1].lower()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp.write(uploaded_file.read())
-            audio_path = tmp.name
-        st.info("📂 File berhasil diunggah, memproses...")
-        process_audio(audio_path)
+            input_path = tmp.name
+
+        # 🔁 Konversi otomatis jika format m4a
+        if suffix == ".m4a":
+            st.info("🔄 Mengonversi file .m4a ke .wav ...")
+            wav_path = convert_m4a_to_wav(input_path)
+            if wav_path:
+                st.audio(wav_path, format="audio/wav")
+                st.info("✅ Konversi selesai, memproses file .wav ...")
+                process_audio(wav_path)
+        else:
+            st.audio(input_path, format="audio/wav")
+            st.info("📂 File berhasil diunggah, memproses...")
+            process_audio(input_path)

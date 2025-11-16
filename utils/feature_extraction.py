@@ -4,9 +4,9 @@ import pandas as pd
 import librosa
 
 def extract_features(file_path):
-    """Ekstraksi fitur MFCC + fitur tambahan dari file WAV"""
+    """Ekstraksi fitur MFCC + fitur tambahan"""
     try:
-        y, sr = librosa.load(file_path, sr=None)
+        y, sr = librosa.load(file_path, sr=None, mono=True)
         y = librosa.util.normalize(y)
 
         mfcc = np.mean(librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13).T, axis=0)
@@ -32,8 +32,16 @@ def extract_features(file_path):
         print(f"[ERROR] Gagal memproses {file_path}: {e}")
         return None
 
+
 def create_dataset(data_dir="data", output_csv="data/voice_dataset.csv"):
     rows = []
+    supported_ext = (".wav", ".m4a", ".mp3")
+
+    print("[INFO] Mulai membaca dataset...")
+    total_files = 0
+    good = 0
+    bad = 0
+
     for user in os.listdir(data_dir):
         user_path = os.path.join(data_dir, user)
         if not os.path.isdir(user_path):
@@ -41,42 +49,55 @@ def create_dataset(data_dir="data", output_csv="data/voice_dataset.csv"):
 
         for status in ["buka", "tutup"]:
             status_path = os.path.join(user_path, status)
-            if not os.path.exists(status_path):
+            if not os.path.isdir(status_path):
                 continue
 
             for file in os.listdir(status_path):
-                if file.endswith(".wav"):
-                    path = os.path.join(status_path, file)
-                    feats = extract_features(path)
-                    if feats:
+                if file.lower().endswith(supported_ext):
+                    total_files += 1
+                    file_path = os.path.join(status_path, file)
+
+                    feats = extract_features(file_path)
+                    if feats is not None:
+                        good += 1
                         feats["user"] = user
                         feats["status"] = status
                         feats["filename"] = file
                         rows.append(feats)
                     else:
-                        print(f"[SKIP] {path} tidak bisa diproses.")
+                        bad += 1
+                        print(f"[SKIP] File gagal diproses: {file_path}")
 
     df = pd.DataFrame(rows)
 
-    # Konversi user & status ke numerik
-    df["user"] = df["user"].replace({"user1": 0, "user2": 1})
-    df["status"] = df["status"].replace({"buka": 0, "tutup": 1})
+    print(f"\nTotal file audio: {total_files}")
+    print(f"Good: {good}")
+    print(f"Bad : {bad}\n")
+
+    # ============================
+    # AUTO LABEL USER & STATUS
+    # ============================
+    df["user"] = df["user"].astype(str).str.strip()
+    df["status"] = df["status"].astype(str).str.strip()
+
+    # Mapping otomatis
+    user_map = {name: idx for idx, name in enumerate(sorted(df["user"].unique()))}
+    status_map = {"buka": 0, "tutup": 1}
+
+    df["user"] = df["user"].map(user_map)
+    df["status"] = df["status"].map(status_map)
 
     # Pastikan semua fitur numerik
     for col in df.columns:
         if col not in ["user", "status", "filename"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    # Hapus baris yang ada NaN
-    df = df.dropna().reset_index(drop=True)
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
     # Simpan CSV
     os.makedirs(os.path.dirname(output_csv), exist_ok=True)
     df.to_csv(output_csv, index=False, encoding="utf-8")
-    print(f"[INFO] Dataset berhasil dibuat: {output_csv} ({len(df)} sampel)")
-    print(f"[DEBUG] Nilai unik user: {df['user'].unique()}")
-    print(f"[DEBUG] Nilai unik status: {df['status'].unique()}")
-    return df
 
-if __name__ == "__main__":
-    create_dataset()
+    print(f"[INFO] Dataset berhasil dibuat: {output_csv} ({len(df)} sampel)")
+    print("[INFO] user_map:", user_map)
+    print("[INFO] status_map:", status_map)
+
+    return df
